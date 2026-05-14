@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Release version (e.g., 2.1.1)'
+        description: 'Release version (e.g., 2.2.0)'
         required: true
         type: string
       prerelease:
@@ -66,7 +66,7 @@ jobs:
           rm -rf xray_temp xray-core.zip
           echo "Xray binary ready at ./xray/xray"
 
-      - name: Prepare config directory and sample config
+      - name: Prepare config directory and sample configs
         run: |
           mkdir -p config
           cat > config/xray_config.json << 'EOF'
@@ -106,7 +106,16 @@ jobs:
             ]
           }
           EOF
-          echo "Sample config created"
+          cat > config/xray_config.txt << 'EOF'
+          # Xray URL Config
+          # Put your proxy URL on the line below (remove the # at the start).
+          # Supported formats: vless://, vmess://, trojan://, ss://
+          # Example:
+          # vless://your-uuid@your-server.com:443?type=ws&security=tls&host=your-server.com&path=%2F&sni=your-server.com#MyConfig
+          #
+          # If this file has a valid URL, it will be used instead of xray_config.json.
+          EOF
+          echo "Sample configs created"
 
       - name: Create full zip package with Xray included
         run: |
@@ -155,7 +164,9 @@ jobs:
             
             ### Xray Mode Configuration
             
-            Edit `config/xray_config.json` with your real outbound settings (UUID, serverName, etc.). The scanner will automatically replace the IP address.
+            Edit **one** of these files with your config:
+            - **URL format** → `config/xray_config.txt` (paste your vless:// / vmess:// / trojan:// / ss:// link)
+            - **JSON format** → `config/xray_config.json` (paste your full Xray JSON config)
             
             ---
             Made with love for Iranian users

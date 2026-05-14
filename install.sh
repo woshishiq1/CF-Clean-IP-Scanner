@@ -48,12 +48,10 @@ echo "✓ Dependencies ready"
 echo ""
 echo "[4/6] Installing Xray core (latest stable for Android ARM64-v8a)..."
 
-# Check if xray binary already exists (e.g., from direct zip package)
 if [ -f "./xray/xray" ]; then
     echo "  → Xray binary already present, skipping download."
 else
     echo "  → Downloading Xray from GitHub..."
-    # Get download URL using GitHub API
     LATEST_TAG=$(curl -s https://api.github.com/repos/XTLS/Xray-core/releases/latest | grep -o '"tag_name": "[^"]*' | cut -d '"' -f 4)
     if [ -z "$LATEST_TAG" ]; then
         echo "✗ Could not determine latest Xray tag. Please check your internet connection."
@@ -71,8 +69,9 @@ fi
 echo "✓ Xray core installed"
 
 echo ""
-echo "[5/6] Setting up Xray config sample..."
+echo "[5/6] Setting up Xray config files..."
 mkdir -p config
+
 if [ ! -f "config/xray_config.json" ]; then
     cat > config/xray_config.json << 'EOF'
 {
@@ -111,10 +110,24 @@ if [ ! -f "config/xray_config.json" ]; then
   ]
 }
 EOF
-    echo "✓ Sample config created at config/xray_config.json"
-    echo "  Please edit this file with your own Xray configuration before using Xray mode."
+    echo "✓ Sample JSON config created at config/xray_config.json"
 else
     echo "✓ Existing xray_config.json found, keeping it."
+fi
+
+if [ ! -f "config/xray_config.txt" ]; then
+    cat > config/xray_config.txt << 'EOF'
+# Xray URL Config
+# Put your proxy URL on the line below (remove the # at the start).
+# Supported formats: vless://, vmess://, trojan://, ss://
+# Example:
+# vless://your-uuid@your-server.com:443?type=ws&security=tls&host=your-server.com&path=%2F&sni=your-server.com#MyConfig
+#
+# If this file has a valid URL, it will be used instead of xray_config.json.
+EOF
+    echo "✓ Sample URL config created at config/xray_config.txt"
+else
+    echo "✓ Existing xray_config.txt found, keeping it."
 fi
 
 echo ""
@@ -149,7 +162,10 @@ echo "  You will be asked to choose scan mode:"
 echo "    1) Normal scan (TCP ping + speed test)"
 echo "    2) Xray scan (uses Xray core with your config)"
 echo ""
-echo "  For Xray mode, edit: ~/CF-Clean-IP-Scanner/config/xray_config.json"
+echo "  For Xray mode, edit ONE of these files:"
+echo "    URL format : ~/CF-Clean-IP-Scanner/config/xray_config.txt"
+echo "    JSON format: ~/CF-Clean-IP-Scanner/config/xray_config.json"
+echo ""
 echo "  Results saved to: clean_ips.txt and clean_ips_list.txt"
 echo ""
 echo "You can now run: cf-scanner"

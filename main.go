@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"fmt"
 	"os"
-	"os/exec"
 	"os/signal"
 	"strings"
 	"sync/atomic"
@@ -20,9 +19,7 @@ import (
 const version = "2.3.0"
 
 func clearScreen() {
-	cmd := exec.Command("clear")
-	cmd.Stdout = os.Stdout
-	cmd.Run()
+	fmt.Print("\033[H\033[2J\033[3J")
 }
 
 func formatDuration(d time.Duration) string {

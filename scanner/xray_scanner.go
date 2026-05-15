@@ -63,6 +63,22 @@ var allowedStreamFields = map[string]bool{
 	"sockopt":             true,
 }
 
+var urlPlaceholders = []string{
+	"your-uuid",
+	"your-server",
+	"your-domain",
+	"example.com",
+	"ip_placeholder",
+	"your-password",
+	"your-id",
+}
+
+var jsonPlaceholders = []string{
+	"your-uuid-here",
+	"ip_placeholder",
+	"your-domain.com",
+}
+
 func cleanStreamSettings(ss map[string]interface{}) map[string]interface{} {
 	clean := make(map[string]interface{})
 	for k, v := range ss {
@@ -109,6 +125,180 @@ func base64DecodeAny(s string) ([]byte, error) {
 		return b, nil
 	}
 	return nil, fmt.Errorf("cannot base64 decode input")
+}
+
+func validateURLConfig(rawURL string) error {
+	parts := strings.SplitN(rawURL, "://", 2)
+	if len(parts) != 2 || parts[1] == "" {
+		return fmt.Errorf("not a valid proxy URL format")
+	}
+
+	scheme := strings.ToLower(parts[0])
+	validSchemes := map[string]bool{
+		"vless": true, "vmess": true, "trojan": true,
+		"ss": true, "shadowsocks": true,
+	}
+	if !validSchemes[scheme] {
+		return fmt.Errorf("unsupported protocol '%s' — supported: vless, vmess, trojan, ss", scheme)
+	}
+
+	lowerURL := strings.ToLower(rawURL)
+	for _, p := range urlPlaceholders {
+		if strings.Contains(lowerURL, strings.ToLower(p)) {
+			return fmt.Errorf("config contains placeholder value '%s' — please replace with your real config", p)
+		}
+	}
+
+	switch scheme {
+	case "vmess":
+		encoded := strings.TrimPrefix(rawURL, "vmess://")
+		if idx := strings.Index(encoded, "#"); idx != -1 {
+			encoded = encoded[:idx]
+		}
+		decoded, err := base64DecodeAny(encoded)
+		if err != nil {
+			return fmt.Errorf("invalid vmess URL: cannot decode base64 content")
+		}
+		var v map[string]interface{}
+		if err := json.Unmarshal(decoded, &v); err != nil {
+			return fmt.Errorf("invalid vmess URL: cannot parse inner JSON")
+		}
+		id, _ := v["id"].(string)
+		if id == "" {
+			return fmt.Errorf("vmess config missing 'id' field")
+		}
+		add, _ := v["add"].(string)
+		if add == "" {
+			return fmt.Errorf("vmess config missing server address ('add' field)")
+		}
+	default:
+		u, err := url.Parse(rawURL)
+		if err != nil {
+			return fmt.Errorf("cannot parse URL: %v", err)
+		}
+		if u.User.Username() == "" {
+			return fmt.Errorf("%s config missing credentials (uuid or password)", scheme)
+		}
+		if u.Hostname() == "" {
+			return fmt.Errorf("%s config missing server address", scheme)
+		}
+	}
+
+	return nil
+}
+
+func validateJSONConfig(content string) error {
+	var cfg map[string]interface{}
+	if err := json.Unmarshal([]byte(content), &cfg); err != nil {
+		return fmt.Errorf("invalid JSON: %v", err)
+	}
+
+	inboundsRaw, ok := cfg["inbounds"]
+	if !ok {
+		return fmt.Errorf("config missing 'inbounds' field")
+	}
+	inbounds, ok := inboundsRaw.([]interface{})
+	if !ok || len(inbounds) == 0 {
+		return fmt.Errorf("'inbounds' must be a non-empty array")
+	}
+	hasSocks := false
+	for _, in := range inbounds {
+		inMap, ok := in.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		proto, _ := inMap["protocol"].(string)
+		if strings.ToLower(proto) == "socks" {
+			hasSocks = true
+			break
+		}
+	}
+	if !hasSocks {
+		return fmt.Errorf("config has no SOCKS inbound — please add a socks inbound")
+	}
+
+	outboundsRaw, ok := cfg["outbounds"]
+	if !ok {
+		return fmt.Errorf("config missing 'outbounds' field")
+	}
+	outbounds, ok := outboundsRaw.([]interface{})
+	if !ok || len(outbounds) == 0 {
+		return fmt.Errorf("'outbounds' must be a non-empty array")
+	}
+
+	skipProtos := map[string]bool{"freedom": true, "blackhole": true, "dns": true}
+	var proxyOut map[string]interface{}
+	for _, out := range outbounds {
+		outMap, ok := out.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		proto, _ := outMap["protocol"].(string)
+		if !skipProtos[strings.ToLower(proto)] && proto != "" {
+			proxyOut = outMap
+			break
+		}
+	}
+	if proxyOut == nil {
+		return fmt.Errorf("config has no proxy outbound — add a vless, vmess, trojan or shadowsocks outbound")
+	}
+
+	cfgBytes, _ := json.Marshal(cfg)
+	cfgStr := string(cfgBytes)
+	for _, p := range jsonPlaceholders {
+		if strings.Contains(cfgStr, p) {
+			return fmt.Errorf("config contains placeholder value '%s' — please replace with your real config", p)
+		}
+	}
+
+	return nil
+}
+
+func ValidateXrayConfig() error {
+	if data, err := os.ReadFile(xrayURLConfigPath); err == nil {
+		content := strings.TrimSpace(string(data))
+		for _, line := range strings.Split(content, "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
+			}
+			if err := validateURLConfig(line); err != nil {
+				return fmt.Errorf("invalid URL config in xray_config.txt: %v", err)
+			}
+			return nil
+		}
+	}
+
+	data, err := os.ReadFile(xrayJSONConfigPath)
+	if err != nil {
+		return fmt.Errorf("no config found — please edit config/xray_config.txt (URL) or config/xray_config.json (JSON)")
+	}
+	content := strings.TrimSpace(string(data))
+	if content == "" {
+		return fmt.Errorf("config/xray_config.json is empty — please add your Xray config")
+	}
+	if err := validateJSONConfig(content); err != nil {
+		return fmt.Errorf("invalid JSON config in xray_config.json: %v", err)
+	}
+	return nil
+}
+
+func readXrayConfig() (string, bool, error) {
+	if data, err := os.ReadFile(xrayURLConfigPath); err == nil {
+		content := strings.TrimSpace(string(data))
+		for _, line := range strings.Split(content, "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
+			}
+			return line, true, nil
+		}
+	}
+	data, err := os.ReadFile(xrayJSONConfigPath)
+	if err != nil {
+		return "", false, fmt.Errorf("no config found: checked %s and %s", xrayURLConfigPath, xrayJSONConfigPath)
+	}
+	return strings.TrimSpace(string(data)), false, nil
 }
 
 func buildStreamSettings(network, security, sni, fp, path, headerHost string, allowInsecure bool, pbk, sid, spx string) map[string]interface{} {
@@ -571,26 +761,6 @@ func buildConfigFromURL(rawURL string, scanIP string, socksPort int) (string, *x
 	return tempFile.Name(), socksInfo, nil
 }
 
-func readXrayConfig() (string, bool, error) {
-	if data, err := os.ReadFile(xrayURLConfigPath); err == nil {
-		content := strings.TrimSpace(string(data))
-		if content != "" && !strings.HasPrefix(content, "#") {
-			for _, line := range strings.Split(content, "\n") {
-				line = strings.TrimSpace(line)
-				if line == "" || strings.HasPrefix(line, "#") {
-					continue
-				}
-				return line, true, nil
-			}
-		}
-	}
-	data, err := os.ReadFile(xrayJSONConfigPath)
-	if err != nil {
-		return "", false, fmt.Errorf("no config found: checked %s and %s", xrayURLConfigPath, xrayJSONConfigPath)
-	}
-	return strings.TrimSpace(string(data)), false, nil
-}
-
 func createTempConfigWithIP(ip string, socksPort int) (string, *xraySocksInfo, error) {
 	content, isURL, err := readXrayConfig()
 	if err != nil {
@@ -853,22 +1023,6 @@ func createTempConfigWithIP(ip string, socksPort int) (string, *xraySocksInfo, e
 	tempFile.Close()
 
 	return tempFile.Name(), socksInfo, nil
-}
-
-func HasXrayConfig() bool {
-	if data, err := os.ReadFile(xrayURLConfigPath); err == nil {
-		content := strings.TrimSpace(string(data))
-		for _, line := range strings.Split(content, "\n") {
-			line = strings.TrimSpace(line)
-			if line != "" && !strings.HasPrefix(line, "#") {
-				return true
-			}
-		}
-	}
-	if _, err := os.Stat(xrayJSONConfigPath); err == nil {
-		return true
-	}
-	return false
 }
 
 func createSocksDialer(socksInfo *xraySocksInfo) (proxy.Dialer, error) {

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"strings"
 	"sync/atomic"
@@ -16,7 +17,13 @@ import (
 	"github.com/4n0nymou3/CF-Clean-IP-Scanner/utils"
 )
 
-const version = "2.2.0"
+const version = "2.3.0"
+
+func clearScreen() {
+	cmd := exec.Command("clear")
+	cmd.Stdout = os.Stdout
+	cmd.Run()
+}
 
 func formatDuration(d time.Duration) string {
 	h := int(d.Hours())
@@ -54,13 +61,17 @@ func askScanMode() int {
 			return 1
 		} else if input == "2" {
 			if _, err := os.Stat("./xray/xray"); os.IsNotExist(err) {
+				fmt.Println()
 				color.New(color.FgRed).Println("Error: Xray binary not found. Please reinstall the tool.")
 				os.Exit(1)
 			}
-			if !scanner.HasXrayConfig() {
-				color.New(color.FgRed).Println("Error: No Xray config found.")
-				color.New(color.FgYellow).Println("  For URL format: edit config/xray_config.txt")
-				color.New(color.FgYellow).Println("  For JSON format: edit config/xray_config.json")
+			if err := scanner.ValidateXrayConfig(); err != nil {
+				fmt.Println()
+				color.New(color.FgRed).Println("Error: " + err.Error())
+				fmt.Println()
+				color.New(color.FgYellow).Println("How to fix:")
+				color.New(color.FgWhite).Println("  For URL config : edit config/xray_config.txt  (paste vless:// or vmess:// or trojan:// or ss:// link)")
+				color.New(color.FgWhite).Println("  For JSON config: edit config/xray_config.json (paste full Xray JSON config)")
 				os.Exit(1)
 			}
 			return 2
@@ -71,6 +82,8 @@ func askScanMode() int {
 }
 
 func main() {
+	clearScreen()
+
 	utils.PrintHeader()
 	utils.PrintDesigner()
 
@@ -129,7 +142,6 @@ func main() {
 
 	if mode == 1 {
 		pingResults = scanner.PingIPs(stopPingCh, ips)
-
 		select {
 		case <-stopPingCh:
 			pingWasStopped = true
@@ -137,7 +149,6 @@ func main() {
 		}
 	} else {
 		pingResults = scanner.PingIPsViaXray(stopPingCh, ips)
-
 		select {
 		case <-stopPingCh:
 			pingWasStopped = true

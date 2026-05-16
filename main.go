@@ -16,7 +16,7 @@ import (
 	"github.com/4n0nymou3/CF-Clean-IP-Scanner/utils"
 )
 
-const version = "2.3.0"
+const version = "2.3.1"
 
 func clearScreen() {
 	fmt.Print("\033[H\033[2J\033[3J")

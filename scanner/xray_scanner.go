@@ -1,6 +1,7 @@
 package scanner
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/base64"
@@ -30,7 +31,7 @@ const (
 	xrayTestNum           = 10
 	xrayMinSpeed          = 0.0
 	xrayPort              = 443
-	xrayWorkerCount       = 3
+	xrayWorkerCount       = 8
 	xraySocksReadyTimeout = 4 * time.Second
 	xrayPortBase          = 11080
 	xrayPingTimes         = 1
@@ -951,6 +952,51 @@ func createSocksDialer(socksInfo *xraySocksInfo) (proxy.Dialer, error) {
 		return proxy.SOCKS5("tcp", addr, &auth, proxy.Direct)
 	}
 	return proxy.SOCKS5("tcp", addr, nil, proxy.Direct)
+}
+
+func SelfTestXray() error {
+	cfg := map[string]interface{}{
+		"log": map[string]interface{}{
+			"loglevel": "warning",
+		},
+		"inbounds": []interface{}{
+			map[string]interface{}{
+				"listen":   "127.0.0.1",
+				"port":     float64(10085),
+				"protocol": "socks",
+				"settings": map[string]interface{}{"udp": false},
+			},
+		},
+		"outbounds": []interface{}{
+			map[string]interface{}{"protocol": "freedom"},
+		},
+	}
+
+	cfgPath, err := writeTempConfig(cfg)
+	if err != nil {
+		return fmt.Errorf("Failed to write self-test config: %v", err)
+	}
+	defer os.Remove(cfgPath)
+
+	cmd := exec.Command("./xray/xray", "run", "-c", cfgPath)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("Failed to start Xray binary. Ensure it is executable.\nError: %v\nOutput: %s", err, out.String())
+	}
+
+	err = waitForSocksReady(10085, 3*time.Second)
+
+	cmd.Process.Kill()
+	cmd.Wait()
+
+	if err != nil {
+		return fmt.Errorf("Xray started but port binding failed or it crashed immediately.\nError: %v\nXray Output:\n%s", err, out.String())
+	}
+
+	return nil
 }
 
 func testIPViaXray(ip *net.IPAddr, socksPort int) (recv int, totalDelay time.Duration) {

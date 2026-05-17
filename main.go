@@ -16,7 +16,7 @@ import (
 	"github.com/fatih/color"
 )
 
-const version = "2.3.4"
+const version = "2.3.5"
 
 func clearScreen() {
 	fmt.Print("\033[H\033[2J\033[3J")

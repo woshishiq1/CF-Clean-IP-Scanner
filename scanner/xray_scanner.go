@@ -39,8 +39,6 @@ const (
 	xrayURLConfigPath     = "./config/xray_config.txt"
 	xrayJSONConfigPath    = "./config/xray_config.json"
 	xrayKillSleep         = 600 * time.Millisecond
-	xrayPreTestPort       = 11090
-	xrayPreTestTimeout    = 20 * time.Second
 )
 
 type xraySocksInfo struct {
@@ -148,12 +146,12 @@ func GetXrayDiagInfo() string {
 
 	if xrayDiagStartupTimeout > 0 {
 		sb.WriteString(fmt.Sprintf("  Core startup timeouts  : %d\n", xrayDiagStartupTimeout))
-		sb.WriteString("    The core port did not bind in time. Device may be under load.\n")
+		sb.WriteString("    Core port did not bind in time. Device may be under load.\n")
 	}
 	if xrayDiagHTTPError > 0 {
 		sb.WriteString(fmt.Sprintf("  Tunnel connection errors: %d\n", xrayDiagHTTPError))
-		sb.WriteString("    The core started but the tunnel to the remote server failed.\n")
-		sb.WriteString("    Most likely cause: the config cannot reach its server via these IPs.\n")
+		sb.WriteString("    Core started but tunnel could not reach the remote server.\n")
+		sb.WriteString("    This is normal if those IPs are filtered on your network.\n")
 	}
 	if xrayDiagWrongStatus > 0 {
 		sb.WriteString(fmt.Sprintf("  Unexpected HTTP status  : %d\n", xrayDiagWrongStatus))
@@ -169,12 +167,11 @@ func GetXrayDiagInfo() string {
 		}
 	}
 
-	if xrayDiagHTTPError > 0 || xrayDiagStartupTimeout > 0 {
-		sb.WriteString("\n  WHAT TO DO:\n")
-		sb.WriteString("    1. Verify your config works in an Xray-based client first.\n")
-		sb.WriteString("    2. Disable any active VPN before running the Xray scan.\n")
-		sb.WriteString("    3. Try again — network conditions may have changed.\n")
+	if xrayDiagStartupTimeout > 0 {
+		sb.WriteString("\n  NOTE: Core startup timeouts may indicate the device is too slow.\n")
+		sb.WriteString("  Try closing background apps and running again.\n")
 	}
+
 	sb.WriteString("=============================================\n")
 	return sb.String()
 }
@@ -399,69 +396,6 @@ func readXrayConfig() (string, bool, error) {
 		return "", false, fmt.Errorf("no config found: checked %s and %s", xrayURLConfigPath, xrayJSONConfigPath)
 	}
 	return strings.TrimSpace(string(data)), false, nil
-}
-
-func extractOriginalServerFromURL(rawURL string) string {
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return ""
-	}
-	return u.Hostname()
-}
-
-func extractOriginalServerFromJSON(content string) string {
-	var cfg map[string]interface{}
-	if err := json.Unmarshal([]byte(content), &cfg); err != nil {
-		return ""
-	}
-	outbounds, ok := cfg["outbounds"].([]interface{})
-	if !ok {
-		return ""
-	}
-	skipProtos := map[string]bool{"freedom": true, "blackhole": true, "dns": true}
-	for _, out := range outbounds {
-		outMap, ok := out.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		proto, _ := outMap["protocol"].(string)
-		if skipProtos[strings.ToLower(proto)] {
-			continue
-		}
-		settings, ok := outMap["settings"].(map[string]interface{})
-		if !ok {
-			continue
-		}
-		switch strings.ToLower(proto) {
-		case "vless", "vmess":
-			vnext, ok := settings["vnext"].([]interface{})
-			if !ok || len(vnext) == 0 {
-				continue
-			}
-			server, ok := vnext[0].(map[string]interface{})
-			if !ok {
-				continue
-			}
-			addr, _ := server["address"].(string)
-			if addr != "" {
-				return addr
-			}
-		case "trojan", "shadowsocks":
-			servers, ok := settings["servers"].([]interface{})
-			if !ok || len(servers) == 0 {
-				continue
-			}
-			server, ok := servers[0].(map[string]interface{})
-			if !ok {
-				continue
-			}
-			addr, _ := server["address"].(string)
-			if addr != "" {
-				return addr
-			}
-		}
-	}
-	return ""
 }
 
 func buildStreamSettings(network, security, sni, fp, path, headerHost string, allowInsecure bool, pbk, sid, spx string) map[string]interface{} {
@@ -1165,7 +1099,7 @@ func SelfTestXray() error {
 	cmd.Stderr = &out
 
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("Failed to start Xray binary. Make sure it exists at ./xray/xray and is executable.\nError: %v", err)
+		return fmt.Errorf("Failed to start core binary. Make sure it exists at ./xray/xray and is executable.\nError: %v", err)
 	}
 
 	err = waitForSocksReady(10085, 6*time.Second)
@@ -1182,84 +1116,6 @@ func SelfTestXray() error {
 	}
 
 	return nil
-}
-
-func PreTestXrayConfig() error {
-	content, isURL, err := readXrayConfig()
-	if err != nil {
-		return fmt.Errorf("cannot read config: %v", err)
-	}
-
-	var originalServer string
-	if isURL {
-		originalServer = extractOriginalServerFromURL(content)
-	} else {
-		originalServer = extractOriginalServerFromJSON(content)
-	}
-
-	if originalServer == "" {
-		return fmt.Errorf("cannot determine server address from config")
-	}
-
-	color.New(color.FgCyan).Printf("Testing config connectivity with server (%s)...\n", originalServer)
-
-	configPath, socksInfo, err := createTempConfigWithIP(originalServer, xrayPreTestPort)
-	if err != nil {
-		return fmt.Errorf("cannot build config for pre-test: %v", err)
-	}
-	defer os.Remove(configPath)
-
-	cmd := exec.Command("./xray/xray", "run", "-c", configPath)
-	var stderrBuf bytes.Buffer
-	cmd.Stdout = io.Discard
-	cmd.Stderr = &stderrBuf
-
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("cannot start core: %v", err)
-	}
-	defer func() {
-		cmd.Process.Kill()
-		cmd.Wait()
-		time.Sleep(xrayKillSleep)
-	}()
-
-	if err := waitForSocksReady(xrayPreTestPort, xraySocksReadyTimeout); err != nil {
-		xrayOut := strings.TrimSpace(stderrBuf.String())
-		if xrayOut != "" {
-			return fmt.Errorf("Core port did not become ready.\nOutput:\n%s", xrayOut)
-		}
-		return fmt.Errorf("Core port did not become ready in %v.\nTry restarting the terminal.", xraySocksReadyTimeout)
-	}
-
-	httpClient, err := makeTestHTTPClient(socksInfo, xrayPreTestTimeout)
-	if err != nil {
-		return fmt.Errorf("cannot create HTTP client: %v", err)
-	}
-
-	resp, err := httpClient.Get("https://cp.cloudflare.com/generate_204")
-	if err != nil {
-		xrayOut := strings.TrimSpace(stderrBuf.String())
-		msg := fmt.Sprintf("Config pre-test FAILED: cannot reach server.\nError: %v", err)
-		if xrayOut != "" {
-			msg += fmt.Sprintf("\nCore output:\n%s", xrayOut)
-		}
-		msg += "\n"
-		msg += "\nDiagnosis: the config cannot connect to its remote server."
-		msg += "\nSteps to fix:"
-		msg += "\n  1. Import this config into an Xray-based client and verify it works."
-		msg += "\n  2. If it works there but not here, disable any active VPN"
-		msg += "\n     before running the Xray scan (a VPN may interfere with the tunnel)."
-		msg += "\n  3. If it does not work there either, get a working config first."
-		return fmt.Errorf(msg)
-	}
-	io.Copy(io.Discard, resp.Body)
-	resp.Body.Close()
-
-	if resp.StatusCode == 200 || resp.StatusCode == 204 {
-		return nil
-	}
-
-	return fmt.Errorf("pre-test got unexpected HTTP status: %d\nCheck your config and try again.", resp.StatusCode)
 }
 
 func testIPViaXray(ip *net.IPAddr, socksPort int) (recv int, totalDelay time.Duration) {
@@ -1319,19 +1175,6 @@ func PingIPsViaXray(stopCh <-chan struct{}, ips []*net.IPAddr) []PingResult {
 		color.New(color.FgRed).Println("ERROR: Core binary not found at ./xray/xray")
 		return nil
 	}
-
-	color.New(color.FgCyan).Println("Running config connectivity pre-test...")
-	if err := PreTestXrayConfig(); err != nil {
-		fmt.Println()
-		color.New(color.FgRed, color.Bold).Println("CONFIG PRE-TEST FAILED!")
-		fmt.Println()
-		color.New(color.FgWhite).Println(err.Error())
-		fmt.Println()
-		color.New(color.FgYellow).Println("Scan aborted. Please fix the config issue above before scanning.")
-		return nil
-	}
-	color.New(color.FgGreen).Println("Config pre-test passed! Starting scan...")
-	fmt.Println()
 
 	resetXrayDiag()
 

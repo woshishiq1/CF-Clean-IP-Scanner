@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Release version (e.g., 2.3.5)'
+        description: 'Release version (e.g., 2.3.6)'
         required: true
         type: string
       prerelease:
@@ -47,24 +47,75 @@ jobs:
 
       - name: Download Xray core latest stable (Android ARM64-v8a)
         run: |
-          LATEST_TAG=$(curl -s https://api.github.com/repos/XTLS/Xray-core/releases/latest | grep -o '"tag_name": "[^"]*' | cut -d '"' -f 4)
-          if [ -z "$LATEST_TAG" ]; then
-            echo "Failed to get latest Xray tag"
+          MAX_RETRIES=3
+          RETRY_COUNT=0
+
+          install_xray() {
+            echo "Attempting to download Xray (Attempt $((RETRY_COUNT + 1))/$MAX_RETRIES)..."
+
+            LATEST_URL=$(curl -sL "https://api.github.com/repos/XTLS/Xray-core/releases/latest" | jq -r '.assets[] | select(.name=="Xray-android-arm64-v8a.zip") | .browser_download_url')
+
+            if [ -z "$LATEST_URL" ] || [ "$LATEST_URL" = "null" ]; then
+              echo "Failed to fetch Xray download URL from GitHub API"
+              return 1
+            fi
+
+            echo "Downloading from $LATEST_URL"
+
+            if ! curl -L --retry 3 --retry-delay 5 -o xray-core.zip "$LATEST_URL"; then
+              echo "Failed to download Xray"
+              return 1
+            fi
+
+            if [ ! -f xray-core.zip ] || [ ! -s xray-core.zip ]; then
+              echo "Downloaded file is missing or empty"
+              return 1
+            fi
+
+            if ! unzip -o xray-core.zip -d xray_temp; then
+              echo "Failed to unzip Xray"
+              rm -f xray-core.zip
+              return 1
+            fi
+
+            mkdir -p xray
+            cp xray_temp/xray xray/
+            chmod +x xray/xray
+            rm -rf xray_temp xray-core.zip
+            echo "Xray binary ready at ./xray/xray"
+            return 0
+          }
+
+          while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+            if install_xray; then
+              echo "✓ Xray download successful"
+              exit 0
+            else
+              RETRY_COUNT=$((RETRY_COUNT + 1))
+              if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
+                echo "Retrying in 30 seconds..."
+                sleep 30
+              fi
+            fi
+          done
+
+          echo "Trying fallback with hardcoded version..."
+          FALLBACK_VERSION="v25.3.6"
+          FALLBACK_URL="https://github.com/XTLS/Xray-core/releases/download/${FALLBACK_VERSION}/Xray-android-arm64-v8a.zip"
+          echo "Using fallback URL: $FALLBACK_URL"
+
+          if curl -L --retry 3 -o xray-core.zip "$FALLBACK_URL" && \
+             unzip -o xray-core.zip -d xray_temp && \
+             mkdir -p xray && \
+             cp xray_temp/xray xray/ && \
+             chmod +x xray/xray; then
+            rm -rf xray_temp xray-core.zip
+            echo "✓ Xray installed using fallback version"
+            exit 0
+          else
+            echo "✗ Fallback also failed"
             exit 1
           fi
-          DOWNLOAD_URL="https://github.com/XTLS/Xray-core/releases/download/${LATEST_TAG}/Xray-android-arm64-v8a.zip"
-          echo "Downloading Xray from $DOWNLOAD_URL"
-          curl -L -o xray-core.zip "$DOWNLOAD_URL"
-          if [ ! -f xray-core.zip ]; then
-            echo "Failed to download Xray"
-            exit 1
-          fi
-          unzip -o xray-core.zip -d xray_temp
-          mkdir -p xray
-          cp xray_temp/xray xray/
-          chmod +x xray/xray
-          rm -rf xray_temp xray-core.zip
-          echo "Xray binary ready at ./xray/xray"
 
       - name: Prepare config directory and sample configs
         run: |

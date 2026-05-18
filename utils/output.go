@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/fatih/color"
-	"github.com/4n0nymou3/CF-Clean-IP-Scanner/scanner"
+	"github.com/4n0nymou3/Clean-IP-Scanner/scanner"
 )
 
 func PrintResults(results []scanner.IPResult) {
@@ -60,7 +60,7 @@ func SaveResults(results []scanner.IPResult, filename string) error {
 	}
 	defer file.Close()
 
-	file.WriteString("# Clean Cloudflare IPs\n")
+	file.WriteString("# Clean IPs\n")
 	file.WriteString(fmt.Sprintf("# Generated at: %s\n", time.Now().Format("2006-01-02 15:04:05")))
 	file.WriteString(fmt.Sprintf("# Total IPs found: %d\n", len(results)))
 	file.WriteString("#\n")

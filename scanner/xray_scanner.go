@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/VividCortex/ewma"
@@ -31,14 +32,13 @@ const (
 	xrayTestNum           = 10
 	xrayMinSpeed          = 0.0
 	xrayPort              = 443
-	xrayWorkerCount       = 2
+	xrayWorkerCount       = 8
 	xraySocksReadyTimeout = 8 * time.Second
-	xrayPortBase          = 11080
 	xrayPingTimes         = 1
 	xrayPingTimeout       = 10 * time.Second
 	xrayURLConfigPath     = "./config/xray_config.txt"
 	xrayJSONConfigPath    = "./config/xray_config.json"
-	xrayKillSleep         = 600 * time.Millisecond
+	xrayKillSleep         = 200 * time.Millisecond
 )
 
 type xraySocksInfo struct {
@@ -174,6 +174,16 @@ func GetXrayDiagInfo() string {
 
 	sb.WriteString("=============================================\n")
 	return sb.String()
+}
+
+func findFreePort() (int, error) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return 0, fmt.Errorf("failed to find free port: %v", err)
+	}
+	port := l.Addr().(*net.TCPAddr).Port
+	l.Close()
+	return port, nil
 }
 
 func waitForSocksReady(port int, timeout time.Duration) error {
@@ -1070,6 +1080,11 @@ func makeTestHTTPClient(socksInfo *xraySocksInfo, timeout time.Duration) (*http.
 }
 
 func SelfTestXray() error {
+	testPort, err := findFreePort()
+	if err != nil {
+		return fmt.Errorf("Failed to find free port for self-test: %v", err)
+	}
+
 	cfg := map[string]interface{}{
 		"log": map[string]interface{}{
 			"loglevel": "warning",
@@ -1077,7 +1092,7 @@ func SelfTestXray() error {
 		"inbounds": []interface{}{
 			map[string]interface{}{
 				"listen":   "127.0.0.1",
-				"port":     float64(10085),
+				"port":     float64(testPort),
 				"protocol": "socks",
 				"settings": map[string]interface{}{"udp": false},
 			},
@@ -1094,6 +1109,7 @@ func SelfTestXray() error {
 	defer os.Remove(cfgPath)
 
 	cmd := exec.Command("./xray/xray", "run", "-c", cfgPath)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &out
@@ -1102,10 +1118,12 @@ func SelfTestXray() error {
 		return fmt.Errorf("Failed to start core binary. Make sure it exists at ./xray/xray and is executable.\nError: %v", err)
 	}
 
-	err = waitForSocksReady(10085, 6*time.Second)
+	err = waitForSocksReady(testPort, 6*time.Second)
 
-	cmd.Process.Kill()
-	cmd.Wait()
+	if cmd.Process != nil {
+		syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		cmd.Wait()
+	}
 
 	if err != nil {
 		errOutput := strings.TrimSpace(out.String())
@@ -1118,7 +1136,13 @@ func SelfTestXray() error {
 	return nil
 }
 
-func testIPViaXray(ip *net.IPAddr, socksPort int) (recv int, totalDelay time.Duration) {
+func testIPViaXray(ip *net.IPAddr) (recv int, totalDelay time.Duration) {
+	socksPort, err := findFreePort()
+	if err != nil {
+		recordDiag("configError", ip.String(), "no free port available")
+		return
+	}
+
 	configPath, socksInfo, err := createTempConfigWithIP(ip.String(), socksPort)
 	if err != nil {
 		recordDiag("configError", ip.String(), fmt.Sprintf("build config: %v", err))
@@ -1127,6 +1151,7 @@ func testIPViaXray(ip *net.IPAddr, socksPort int) (recv int, totalDelay time.Dur
 	defer os.Remove(configPath)
 
 	cmd := exec.Command("./xray/xray", "run", "-c", configPath)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	var stderrBuf bytes.Buffer
 	cmd.Stdout = io.Discard
 	cmd.Stderr = &stderrBuf
@@ -1136,8 +1161,10 @@ func testIPViaXray(ip *net.IPAddr, socksPort int) (recv int, totalDelay time.Dur
 		return
 	}
 	defer func() {
-		cmd.Process.Kill()
-		cmd.Wait()
+		if cmd.Process != nil {
+			syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+			cmd.Wait()
+		}
 		time.Sleep(xrayKillSleep)
 	}()
 
@@ -1154,7 +1181,7 @@ func testIPViaXray(ip *net.IPAddr, socksPort int) (recv int, totalDelay time.Dur
 	}
 
 	start := time.Now()
-	resp, err := httpClient.Get("https://cp.cloudflare.com/generate_204")
+	resp, err := httpClient.Get("https://www.gstatic.com/generate_204")
 	if err != nil {
 		recordDiag("httpError", ip.String(), fmt.Sprintf("tunnel: %v", err))
 		return
@@ -1182,7 +1209,7 @@ func PingIPsViaXray(stopCh <-chan struct{}, ips []*net.IPAddr) []PingResult {
 	var mu sync.Mutex
 	total := len(ips)
 
-	color.New(color.FgCyan).Printf("Start latency test (Xray mode - %d worker(s), timeout %v per IP)\n", xrayWorkerCount, xrayPingTimeout)
+	color.New(color.FgCyan).Printf("Start latency test (Xray mode - %d workers, timeout %v per IP)\n", xrayWorkerCount, xrayPingTimeout)
 	bar := newBar(total, "Available:", "")
 
 	ipChan := make(chan *net.IPAddr, total)
@@ -1198,16 +1225,15 @@ func PingIPsViaXray(stopCh <-chan struct{}, ips []*net.IPAddr) []PingResult {
 	var wg sync.WaitGroup
 	for w := 0; w < xrayWorkerCount; w++ {
 		wg.Add(1)
-		go func(workerID int) {
+		go func() {
 			defer wg.Done()
-			socksPort := xrayPortBase + workerID
 			for ipAddr := range ipChan {
 				select {
 				case <-stopCh:
 					return
 				default:
 				}
-				recv, totalDelay := testIPViaXray(ipAddr, socksPort)
+				recv, totalDelay := testIPViaXray(ipAddr)
 				mu.Lock()
 				nowAble := len(results)
 				if recv > 0 {
@@ -1222,7 +1248,7 @@ func PingIPsViaXray(stopCh <-chan struct{}, ips []*net.IPAddr) []PingResult {
 				bar.grow(1, strconv.Itoa(nowAble))
 				mu.Unlock()
 			}
-		}(w)
+		}()
 	}
 
 	wg.Wait()
@@ -1243,7 +1269,12 @@ func PingIPsViaXray(stopCh <-chan struct{}, ips []*net.IPAddr) []PingResult {
 	return results
 }
 
-func downloadSpeedViaXray(ip *net.IPAddr, socksPort int) float64 {
+func downloadSpeedViaXray(ip *net.IPAddr) float64 {
+	socksPort, err := findFreePort()
+	if err != nil {
+		return 0.0
+	}
+
 	configPath, socksInfo, err := createTempConfigWithIP(ip.String(), socksPort)
 	if err != nil {
 		return 0.0
@@ -1251,14 +1282,17 @@ func downloadSpeedViaXray(ip *net.IPAddr, socksPort int) float64 {
 	defer os.Remove(configPath)
 
 	cmd := exec.Command("./xray/xray", "run", "-c", configPath)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
 	if err := cmd.Start(); err != nil {
 		return 0.0
 	}
 	defer func() {
-		cmd.Process.Kill()
-		cmd.Wait()
+		if cmd.Process != nil {
+			syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+			cmd.Wait()
+		}
 		time.Sleep(xrayKillSleep)
 	}()
 
@@ -1349,7 +1383,6 @@ func SpeedTestViaXray(stopCh <-chan struct{}, pingResults []PingResult) []IPResu
 	bar := newBar(testCount, barPadding, "")
 
 	var results []IPResult
-	speedPort := xrayPortBase + xrayWorkerCount
 
 	for i := 0; i < testNum; i++ {
 		select {
@@ -1358,7 +1391,7 @@ func SpeedTestViaXray(stopCh <-chan struct{}, pingResults []PingResult) []IPResu
 		default:
 		}
 		pr := pingResults[i]
-		speedMBps := downloadSpeedViaXray(pr.IP, speedPort)
+		speedMBps := downloadSpeedViaXray(pr.IP)
 		bar.grow(1, "")
 		results = append(results, IPResult{
 			IP:            pr.IP,

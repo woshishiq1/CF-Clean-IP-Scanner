@@ -4,7 +4,7 @@ set -e
 
 clear
 echo "=========================================="
-echo "   CF Clean IP Scanner - Installer"
+echo "   Clean IP Scanner - Installer"
 echo "=========================================="
 echo ""
 echo "Installing for Termux (Android ARM64)"
@@ -36,12 +36,12 @@ echo "✓ All packages ready"
 echo ""
 echo "[2/6] Downloading source code..."
 cd ~
-if [ -d "CF-Clean-IP-Scanner" ]; then
+if [ -d "Clean-IP-Scanner" ]; then
     echo "  → Removing old installation..."
-    rm -rf CF-Clean-IP-Scanner
+    rm -rf Clean-IP-Scanner
 fi
-git clone -q https://github.com/4n0nymou3/CF-Clean-IP-Scanner.git || { echo "✗ Failed to clone repository"; exit 1; }
-cd CF-Clean-IP-Scanner || { echo "✗ Directory not found"; exit 1; }
+git clone -q https://github.com/4n0nymou3/Clean-IP-Scanner.git || { echo "✗ Failed to clone repository"; exit 1; }
+cd Clean-IP-Scanner || { echo "✗ Directory not found"; exit 1; }
 echo "✓ Source code downloaded"
 
 echo ""
@@ -100,7 +100,7 @@ else
     if [ ! -f "./xray/xray" ]; then
         echo ""
         echo "  → Auto-detection failed. Trying fallback version..."
-        FALLBACK_VERSION="v26.3.27"
+        FALLBACK_VERSION="v25.3.6"
         FALLBACK_URL="https://github.com/XTLS/Xray-core/releases/download/${FALLBACK_VERSION}/Xray-android-arm64-v8a.zip"
         echo "  → Downloading $FALLBACK_VERSION from $FALLBACK_URL"
 
@@ -182,10 +182,10 @@ else
 fi
 
 echo ""
-echo "[6/6] Building cf-scanner..."
+echo "[6/6] Building clean-ip-scanner..."
 echo "  (This may take 1-2 minutes...)"
-CGO_ENABLED=0 go build -ldflags="-s -w" -o cf-scanner || { echo "✗ Build failed"; exit 1; }
-if [ ! -f "cf-scanner" ]; then
+CGO_ENABLED=0 go build -ldflags="-s -w" -o clean-ip-scanner || { echo "✗ Build failed"; exit 1; }
+if [ ! -f "clean-ip-scanner" ]; then
     echo "✗ Build failed - executable not created"
     exit 1
 fi
@@ -193,12 +193,12 @@ echo "✓ Build completed"
 
 echo ""
 echo "Installing to system..."
-cat > $PREFIX/bin/cf-scanner << 'SCRIPT'
+cat > $PREFIX/bin/clean-ip-scanner << 'SCRIPT'
 #!/data/data/com.termux/files/usr/bin/bash
-cd ~/CF-Clean-IP-Scanner
-./cf-scanner "$@"
+cd ~/Clean-IP-Scanner
+./clean-ip-scanner "$@"
 SCRIPT
-chmod +x $PREFIX/bin/cf-scanner
+chmod +x $PREFIX/bin/clean-ip-scanner
 echo "✓ Installed to PATH"
 
 echo ""
@@ -207,17 +207,17 @@ echo "   Installation completed successfully!"
 echo "=========================================="
 echo ""
 echo "Usage:"
-echo "  cf-scanner"
+echo "  clean-ip-scanner"
 echo ""
 echo "  You will be asked to choose scan mode:"
 echo "    1) Normal scan (TCP ping + speed test)"
 echo "    2) Xray scan (uses Xray core with your config)"
 echo ""
 echo "  For Xray mode, edit ONE of these files:"
-echo "    URL format : ~/CF-Clean-IP-Scanner/config/xray_config.txt"
-echo "    JSON format: ~/CF-Clean-IP-Scanner/config/xray_config.json"
+echo "    URL format : ~/Clean-IP-Scanner/config/xray_config.txt"
+echo "    JSON format: ~/Clean-IP-Scanner/config/xray_config.json"
 echo ""
 echo "  Results saved to: clean_ips.txt and clean_ips_list.txt"
 echo ""
-echo "You can now run: cf-scanner"
+echo "You can now run: clean-ip-scanner"
 echo ""

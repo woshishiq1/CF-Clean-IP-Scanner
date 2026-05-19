@@ -1,7 +1,10 @@
 clean_ips.txt
+clean_ips_list.txt
+scan_checkpoint.json
+scan_checkpoint.json.tmp
 *.log
-cf-scanner
-cf-scanner-*
+clean-ip-scanner
+clean-ip-scanner-*
 *.zip
 go.sum
 

@@ -56,13 +56,18 @@ func checkConnection(ip *net.IPAddr) (recv int, totalDelay time.Duration) {
 	return
 }
 
-func PingIPs(stopCh <-chan struct{}, ips []*net.IPAddr) []PingResult {
+func PingIPs(stopCh <-chan struct{}, ips []*net.IPAddr, cp *Checkpoint, existingResults []PingResult) []PingResult {
 	var results []PingResult
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 
 	control := make(chan struct{}, maxRoutines)
 	total := len(ips)
+	processedCount := 0
+	baseIndex := 0
+	if cp != nil {
+		baseIndex = cp.ProgressIndex
+	}
 
 	timeoutMs := int(tcpConnectTimeout.Milliseconds())
 
@@ -86,6 +91,7 @@ func PingIPs(stopCh <-chan struct{}, ips []*net.IPAddr) []PingResult {
 			recv, totalDelay := checkConnection(ipAddr)
 
 			mu.Lock()
+			processedCount++
 			nowAble := len(results)
 			if recv != 0 {
 				nowAble++
@@ -99,6 +105,14 @@ func PingIPs(stopCh <-chan struct{}, ips []*net.IPAddr) []PingResult {
 					Received: recv,
 					Delay:    avg,
 				})
+			}
+			if cp != nil && processedCount%saveInterval == 0 {
+				cp.ProgressIndex = baseIndex + processedCount
+				merged := make([]PingResult, 0, len(existingResults)+len(results))
+				merged = append(merged, existingResults...)
+				merged = append(merged, results...)
+				cp.SetPingResults(merged)
+				cp.Save()
 			}
 			mu.Unlock()
 		}(ip)

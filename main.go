@@ -3,8 +3,10 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"net"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -16,7 +18,7 @@ import (
 	"github.com/fatih/color"
 )
 
-const version = "3.0.0"
+const version = "3.1.0"
 
 func clearScreen() {
 	fmt.Print("\033[H\033[2J\033[3J")
@@ -71,7 +73,6 @@ func askScanMode() int {
 				color.New(color.FgWhite).Println("  For JSON config: edit config/xray_config.json (paste full Xray JSON config)")
 				os.Exit(1)
 			}
-
 			fmt.Println()
 			color.New(color.FgCyan).Println("Running Xray environment self-test...")
 			if err := scanner.SelfTestXray(); err != nil {
@@ -83,11 +84,48 @@ func askScanMode() int {
 				os.Exit(1)
 			}
 			color.New(color.FgGreen).Println("Xray self-test passed successfully!")
-
 			return 2
-		} else {
-			color.New(color.FgRed).Println("Invalid choice. Please enter 1 or 2.")
 		}
+		color.New(color.FgRed).Println("Invalid choice. Please enter 1 or 2.")
+	}
+}
+
+func askWorkerCount() int {
+	reader := bufio.NewReader(os.Stdin)
+	for {
+		fmt.Println()
+		color.New(color.FgCyan, color.Bold).Println("Select number of parallel workers for Xray scan:")
+		color.New(color.FgWhite).Println("  4  - Recommended for weak/older devices")
+		color.New(color.FgWhite).Println("  8  - Recommended for most devices (default)")
+		color.New(color.FgWhite).Println("  16 - Recommended for powerful devices")
+		color.New(color.FgWhite).Println("  Valid range: 1 to 16")
+		fmt.Print("Enter worker count (press Enter for default 8): ")
+		input, _ := reader.ReadString('\n')
+		input = strings.TrimSpace(input)
+		if input == "" {
+			return 8
+		}
+		n, err := strconv.Atoi(input)
+		if err != nil || n < 1 || n > 16 {
+			color.New(color.FgRed).Println("Invalid input. Please enter a number between 1 and 16.")
+			continue
+		}
+		return n
+	}
+}
+
+func askResumeOrNew() bool {
+	reader := bufio.NewReader(os.Stdin)
+	for {
+		fmt.Print("Enter R to resume previous scan or N to start a new scan: ")
+		input, _ := reader.ReadString('\n')
+		input = strings.TrimSpace(strings.ToUpper(input))
+		if input == "R" {
+			return true
+		} else if input == "N" {
+			return false
+		}
+		color.New(color.FgRed).Println("Invalid input. Please enter R or N.")
 	}
 }
 
@@ -105,7 +143,64 @@ func main() {
 	color.New(color.FgYellow).Println("Press Ctrl+C at any time to stop and see results found so far.")
 	fmt.Println()
 
-	mode := askScanMode()
+	var (
+		mode          int
+		workers       int
+		cp            *scanner.Checkpoint
+		resuming      bool
+		existingPRs   []scanner.PingResult
+		skipPingPhase bool
+	)
+
+	existingCP := scanner.LoadCheckpoint()
+	if existingCP != nil {
+		fmt.Println()
+		color.New(color.FgYellow, color.Bold).Println("+-------------------------------------------------+")
+		color.New(color.FgYellow, color.Bold).Println("|         UNFINISHED SCAN DETECTED                |")
+		color.New(color.FgYellow, color.Bold).Println("+-------------------------------------------------+")
+		fmt.Println()
+
+		modeStr := "Normal (TCP)"
+		if existingCP.Mode == 2 {
+			modeStr = fmt.Sprintf("Xray (%d workers)", existingCP.Workers)
+		}
+		scanned := existingCP.ProgressIndex
+		total := existingCP.TotalIPs
+		found := len(existingCP.PingResults)
+		pct := 0
+		if total > 0 {
+			pct = scanned * 100 / total
+		}
+
+		color.New(color.FgCyan).Printf("  Previous scan mode : %s\n", modeStr)
+		color.New(color.FgCyan).Printf("  Progress           : %d / %d IPs (%d%%)\n", scanned, total, pct)
+		color.New(color.FgCyan).Printf("  Responsive IPs     : %d found so far\n", found)
+		color.New(color.FgCyan).Printf("  Saved at           : %s\n", existingCP.SavedAt)
+		fmt.Println()
+
+		resuming = askResumeOrNew()
+
+		if resuming {
+			cp = existingCP
+			mode = cp.Mode
+			workers = cp.Workers
+			existingPRs = cp.GetPingResults()
+			skipPingPhase = cp.Phase == scanner.PhaseSpeed
+			fmt.Println()
+			color.New(color.FgGreen).Println("Resuming previous scan...")
+		} else {
+			scanner.DeleteCheckpoint()
+			fmt.Println()
+		}
+	}
+
+	if !resuming {
+		mode = askScanMode()
+		workers = 8
+		if mode == 2 {
+			workers = askWorkerCount()
+		}
+	}
 
 	time.Sleep(500 * time.Millisecond)
 
@@ -142,49 +237,75 @@ func main() {
 
 	startTime := time.Now()
 
-	ipRanges := config.GetCloudflareRanges()
-	ips := scanner.GenerateIPs(ipRanges)
+	pingResults := make([]scanner.PingResult, 0)
+	pingWasStopped := false
 
-	fmt.Println()
-
-	var pingResults []scanner.PingResult
-	var pingWasStopped bool
-
-	if mode == 1 {
-		pingResults = scanner.PingIPs(stopPingCh, ips)
-		select {
-		case <-stopPingCh:
-			pingWasStopped = true
-		default:
-		}
+	if skipPingPhase {
+		color.New(color.FgCyan).Printf("Resuming at speed test phase with %d responsive IPs...\n\n", len(existingPRs))
+		pingResults = existingPRs
 	} else {
-		pingResults = scanner.PingIPsViaXray(stopPingCh, ips)
+		ipRanges := config.GetCloudflareRanges()
+		var scanIPs []*net.IPAddr
+
+		if resuming && cp != nil {
+			scanIPs = cp.GetRemainingIPs()
+			color.New(color.FgCyan).Printf("Resuming ping phase: %d of %d IPs remaining\n\n", len(scanIPs), cp.TotalIPs)
+		} else {
+			scanIPs = scanner.GenerateIPs(ipRanges)
+			cp = scanner.NewCheckpoint(mode, workers, scanIPs)
+			cp.Save()
+			fmt.Println()
+		}
+
+		var newPingResults []scanner.PingResult
+		if mode == 1 {
+			newPingResults = scanner.PingIPs(stopPingCh, scanIPs, cp, existingPRs)
+		} else {
+			newPingResults = scanner.PingIPsViaXray(stopPingCh, scanIPs, workers, cp, existingPRs)
+		}
+
+		pingResults = append(existingPRs, newPingResults...)
+
 		select {
 		case <-stopPingCh:
 			pingWasStopped = true
 		default:
 		}
-	}
 
-	if pingWasStopped && len(pingResults) == 0 {
-		elapsed := time.Since(startTime)
-		color.New(color.FgYellow).Println("Scan stopped during latency test. No responsive IPs found yet.")
-		printScanStats(elapsed, true)
-		return
-	}
+		if pingWasStopped && len(pingResults) == 0 {
+			elapsed := time.Since(startTime)
+			color.New(color.FgYellow).Println("Scan stopped during latency test. No responsive IPs found yet.")
+			if cp != nil {
+				cp.SetPingResults(pingResults)
+				cp.Save()
+			}
+			printScanStats(elapsed, true)
+			return
+		}
 
-	if !pingWasStopped && len(pingResults) == 0 {
-		color.New(color.FgRed, color.Bold).Println("No responsive IPs found!")
-		fmt.Println()
-		color.New(color.FgYellow).Println("Try running again. Network conditions may vary.")
-		elapsed := time.Since(startTime)
-		printScanStats(elapsed, false)
-		return
+		if !pingWasStopped && len(pingResults) == 0 {
+			color.New(color.FgRed, color.Bold).Println("No responsive IPs found!")
+			fmt.Println()
+			color.New(color.FgYellow).Println("Try running again. Network conditions may vary.")
+			elapsed := time.Since(startTime)
+			scanner.DeleteCheckpoint()
+			printScanStats(elapsed, false)
+			return
+		}
+
+		if cp != nil {
+			if pingWasStopped {
+				cp.SetPingResults(pingResults)
+				cp.Save()
+			} else {
+				cp.MarkPingDone(pingResults)
+			}
+		}
 	}
 
 	fmt.Println()
-
 	atomic.StoreInt32(&inSpeedPhase, 1)
+
 	var results []scanner.IPResult
 	if mode == 1 {
 		results = scanner.SpeedTest(stopSpeedCh, pingResults)
@@ -199,6 +320,10 @@ func main() {
 	case <-stopSpeedCh:
 		interrupted = true
 	default:
+	}
+
+	if !interrupted && cp != nil {
+		cp.MarkCompleted()
 	}
 
 	if len(results) == 0 {

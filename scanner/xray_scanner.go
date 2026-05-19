@@ -30,9 +30,7 @@ const (
 	xrayDownloadURL       = "https://speed.cloudflare.com/__down?bytes=52428800"
 	xrayDownloadTimeout   = 15 * time.Second
 	xrayTestNum           = 10
-	xrayMinSpeed          = 0.0
 	xrayPort              = 443
-	xrayWorkerCount       = 8
 	xraySocksReadyTimeout = 8 * time.Second
 	xrayPingTimes         = 1
 	xrayPingTimeout       = 10 * time.Second
@@ -79,19 +77,12 @@ var allowedStreamFields = map[string]bool{
 }
 
 var urlPlaceholders = []string{
-	"your-uuid",
-	"your-server",
-	"your-domain",
-	"example.com",
-	"ip_placeholder",
-	"your-password",
-	"your-id",
+	"your-uuid", "your-server", "your-domain",
+	"example.com", "ip_placeholder", "your-password", "your-id",
 }
 
 var jsonPlaceholders = []string{
-	"your-uuid-here",
-	"ip_placeholder",
-	"your-domain.com",
+	"your-uuid-here", "ip_placeholder", "your-domain.com",
 }
 
 func resetXrayDiag() {
@@ -135,15 +126,12 @@ func recordDiag(field string, ipStr string, detail string) {
 func GetXrayDiagInfo() string {
 	xrayDiagMu.Lock()
 	defer xrayDiagMu.Unlock()
-
 	total := xrayDiagStartupTimeout + xrayDiagHTTPError + xrayDiagWrongStatus + xrayDiagConfigError
 	if total == 0 {
 		return ""
 	}
-
 	var sb strings.Builder
 	sb.WriteString("\n========== Xray Diagnostic Report ==========\n")
-
 	if xrayDiagStartupTimeout > 0 {
 		sb.WriteString(fmt.Sprintf("  Core startup timeouts  : %d\n", xrayDiagStartupTimeout))
 		sb.WriteString("    Core port did not bind in time. Device may be under load.\n")
@@ -159,19 +147,16 @@ func GetXrayDiagInfo() string {
 	if xrayDiagConfigError > 0 {
 		sb.WriteString(fmt.Sprintf("  Config build errors     : %d\n", xrayDiagConfigError))
 	}
-
 	if len(xrayFirstFailures) > 0 {
 		sb.WriteString("\n  First few failures:\n")
 		for _, f := range xrayFirstFailures {
 			sb.WriteString(fmt.Sprintf("    %-20s %s\n", f.ip, f.reason))
 		}
 	}
-
 	if xrayDiagStartupTimeout > 0 {
 		sb.WriteString("\n  NOTE: Core startup timeouts may indicate the device is too slow.\n")
 		sb.WriteString("  Try closing background apps and running again.\n")
 	}
-
 	sb.WriteString("=============================================\n")
 	return sb.String()
 }
@@ -181,22 +166,22 @@ func findFreePort() (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("failed to find free port: %v", err)
 	}
-	port := l.Addr().(*net.TCPAddr).Port
+	p := l.Addr().(*net.TCPAddr).Port
 	l.Close()
-	return port, nil
+	return p, nil
 }
 
-func waitForSocksReady(port int, timeout time.Duration) error {
+func waitForSocksReady(p int, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 100*time.Millisecond)
+		conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", p), 100*time.Millisecond)
 		if err == nil {
 			conn.Close()
 			return nil
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	return fmt.Errorf("core not ready on port %d after %v", port, timeout)
+	return fmt.Errorf("core not ready on port %d after %v", p, timeout)
 }
 
 func cleanStreamSettings(ss map[string]interface{}) map[string]interface{} {
@@ -253,10 +238,7 @@ func validateURLConfig(rawURL string) error {
 		return fmt.Errorf("not a valid proxy URL format")
 	}
 	scheme := strings.ToLower(parts[0])
-	validSchemes := map[string]bool{
-		"vless": true, "vmess": true, "trojan": true,
-		"ss": true, "shadowsocks": true,
-	}
+	validSchemes := map[string]bool{"vless": true, "vmess": true, "trojan": true, "ss": true, "shadowsocks": true}
 	if !validSchemes[scheme] {
 		return fmt.Errorf("unsupported protocol '%s' — supported: vless, vmess, trojan, ss", scheme)
 	}
@@ -320,7 +302,8 @@ func validateJSONConfig(content string) error {
 		if !ok {
 			continue
 		}
-		if strings.ToLower(inMap["protocol"].(string)) == "socks" {
+		proto, _ := inMap["protocol"].(string)
+		if strings.ToLower(proto) == "socks" {
 			hasSocks = true
 			break
 		}
@@ -503,10 +486,10 @@ func parseVlessURL(rawURL string, scanIP string) (map[string]interface{}, error)
 	if uuid == "" {
 		return nil, fmt.Errorf("config missing UUID")
 	}
-	port := xrayPort
-	if p := u.Port(); p != "" {
-		if pInt, e := strconv.Atoi(p); e == nil {
-			port = pInt
+	p := xrayPort
+	if ps := u.Port(); ps != "" {
+		if pInt, e := strconv.Atoi(ps); e == nil {
+			p = pInt
 		}
 	}
 	q := u.Query()
@@ -539,7 +522,7 @@ func parseVlessURL(rawURL string, scanIP string) (map[string]interface{}, error)
 		"vnext": []interface{}{
 			map[string]interface{}{
 				"address": scanIP,
-				"port":    float64(port),
+				"port":    float64(p),
 				"users":   []interface{}{user},
 			},
 		},
@@ -565,13 +548,13 @@ func parseVmessURL(rawURL string, scanIP string) (map[string]interface{}, error)
 	if err := json.Unmarshal(decoded, &v); err != nil {
 		return nil, fmt.Errorf("invalid config format: %v", err)
 	}
-	port := xrayPort
-	switch p := v["port"].(type) {
+	p := xrayPort
+	switch pv := v["port"].(type) {
 	case float64:
-		port = int(p)
+		p = int(pv)
 	case string:
-		if pInt, e := strconv.Atoi(p); e == nil {
-			port = pInt
+		if pInt, e := strconv.Atoi(pv); e == nil {
+			p = pInt
 		}
 	}
 	id, _ := v["id"].(string)
@@ -601,7 +584,7 @@ func parseVmessURL(rawURL string, scanIP string) (map[string]interface{}, error)
 		"vnext": []interface{}{
 			map[string]interface{}{
 				"address": scanIP,
-				"port":    float64(port),
+				"port":    float64(p),
 				"users": []interface{}{
 					map[string]interface{}{
 						"id":       id,
@@ -630,10 +613,10 @@ func parseTrojanURL(rawURL string, scanIP string) (map[string]interface{}, error
 	if password == "" {
 		return nil, fmt.Errorf("config missing password")
 	}
-	port := xrayPort
-	if p := u.Port(); p != "" {
-		if pInt, e := strconv.Atoi(p); e == nil {
-			port = pInt
+	p := xrayPort
+	if ps := u.Port(); ps != "" {
+		if pInt, e := strconv.Atoi(ps); e == nil {
+			p = pInt
 		}
 	}
 	q := u.Query()
@@ -660,7 +643,7 @@ func parseTrojanURL(rawURL string, scanIP string) (map[string]interface{}, error
 		"servers": []interface{}{
 			map[string]interface{}{
 				"address":  scanIP,
-				"port":     float64(port),
+				"port":     float64(p),
 				"password": password,
 				"level":    float64(8),
 			},
@@ -676,7 +659,7 @@ func parseTrojanURL(rawURL string, scanIP string) (map[string]interface{}, error
 
 func parseSSURL(rawURL string, scanIP string) (map[string]interface{}, error) {
 	var method, password string
-	port := xrayPort
+	p := xrayPort
 	u, parseErr := url.Parse(rawURL)
 	if parseErr == nil && u.Host != "" {
 		userInfo := u.User.String()
@@ -693,9 +676,9 @@ func parseSSURL(rawURL string, scanIP string) (map[string]interface{}, error) {
 				password = parts[1]
 			}
 		}
-		if p := u.Port(); p != "" {
-			if pInt, e := strconv.Atoi(p); e == nil {
-				port = pInt
+		if ps := u.Port(); ps != "" {
+			if pInt, e := strconv.Atoi(ps); e == nil {
+				p = pInt
 			}
 		}
 	} else {
@@ -722,7 +705,7 @@ func parseSSURL(rawURL string, scanIP string) (map[string]interface{}, error) {
 		hostParts := strings.SplitN(hostPart, ":", 2)
 		if len(hostParts) == 2 {
 			if pInt, e := strconv.Atoi(hostParts[1]); e == nil {
-				port = pInt
+				p = pInt
 			}
 		}
 	}
@@ -733,7 +716,7 @@ func parseSSURL(rawURL string, scanIP string) (map[string]interface{}, error) {
 		"servers": []interface{}{
 			map[string]interface{}{
 				"address":  scanIP,
-				"port":     float64(port),
+				"port":     float64(p),
 				"method":   method,
 				"password": password,
 				"level":    float64(8),
@@ -749,29 +732,17 @@ func parseSSURL(rawURL string, scanIP string) (map[string]interface{}, error) {
 
 func buildBaseConfig(inbound, outbound map[string]interface{}) map[string]interface{} {
 	return map[string]interface{}{
-		"log": map[string]interface{}{"loglevel": "none"},
+		"log":      map[string]interface{}{"loglevel": "none"},
 		"inbounds": []interface{}{inbound},
 		"outbounds": []interface{}{
 			outbound,
-			map[string]interface{}{
-				"protocol": "freedom",
-				"settings": map[string]interface{}{},
-				"tag":      "direct",
-			},
-			map[string]interface{}{
-				"protocol": "blackhole",
-				"settings": map[string]interface{}{"response": map[string]interface{}{"type": "http"}},
-				"tag":      "block",
-			},
+			map[string]interface{}{"protocol": "freedom", "settings": map[string]interface{}{}, "tag": "direct"},
+			map[string]interface{}{"protocol": "blackhole", "settings": map[string]interface{}{"response": map[string]interface{}{"type": "http"}}, "tag": "block"},
 		},
 		"routing": map[string]interface{}{
 			"domainStrategy": "AsIs",
 			"rules": []interface{}{
-				map[string]interface{}{
-					"type":        "field",
-					"outboundTag": "proxy",
-					"network":     "tcp,udp",
-				},
+				map[string]interface{}{"type": "field", "outboundTag": "proxy", "network": "tcp,udp"},
 			},
 		},
 	}
@@ -823,11 +794,11 @@ func buildConfigFromURL(rawURL string, scanIP string, socksPort int) (string, *x
 	if err != nil {
 		return "", nil, err
 	}
-	path, writeErr := writeTempConfig(buildBaseConfig(inbound, outbound))
+	p, writeErr := writeTempConfig(buildBaseConfig(inbound, outbound))
 	if writeErr != nil {
 		return "", nil, writeErr
 	}
-	return path, socksInfo, nil
+	return p, socksInfo, nil
 }
 
 func createTempConfigWithIP(ip string, socksPort int) (string, *xraySocksInfo, error) {
@@ -838,12 +809,10 @@ func createTempConfigWithIP(ip string, socksPort int) (string, *xraySocksInfo, e
 	if isURL {
 		return buildConfigFromURL(content, ip, socksPort)
 	}
-
 	var cfg map[string]interface{}
 	if err := json.Unmarshal([]byte(content), &cfg); err != nil {
 		return "", nil, fmt.Errorf("invalid JSON in config: %v", err)
 	}
-
 	inboundsRaw, ok := cfg["inbounds"]
 	if !ok {
 		return "", nil, fmt.Errorf("no 'inbounds' field in config")
@@ -852,10 +821,8 @@ func createTempConfigWithIP(ip string, socksPort int) (string, *xraySocksInfo, e
 	if !ok {
 		return "", nil, fmt.Errorf("'inbounds' is not an array")
 	}
-
 	socksInfo := &xraySocksInfo{Address: "127.0.0.1", Port: socksPort}
 	var newInbounds []interface{}
-
 	for _, in := range inboundsSlice {
 		inMap, ok := in.(map[string]interface{})
 		if !ok {
@@ -902,7 +869,6 @@ func createTempConfigWithIP(ip string, socksPort int) (string, *xraySocksInfo, e
 	if len(newInbounds) == 0 {
 		return "", nil, fmt.Errorf("no SOCKS inbound found in config")
 	}
-
 	outboundsRaw, ok := cfg["outbounds"]
 	if !ok {
 		return "", nil, fmt.Errorf("no 'outbounds' field in config")
@@ -911,11 +877,9 @@ func createTempConfigWithIP(ip string, socksPort int) (string, *xraySocksInfo, e
 	if !ok {
 		return "", nil, fmt.Errorf("'outbounds' is not an array")
 	}
-
 	skipProtocols := map[string]bool{"freedom": true, "blackhole": true, "dns": true}
 	var proxyOutbound map[string]interface{}
 	outboundsByTag := make(map[string]map[string]interface{})
-
 	for _, out := range outboundsSlice {
 		outMap, ok := out.(map[string]interface{})
 		if !ok {
@@ -933,13 +897,11 @@ func createTempConfigWithIP(ip string, socksPort int) (string, *xraySocksInfo, e
 	if proxyOutbound == nil {
 		return "", nil, fmt.Errorf("no supported proxy outbound found in config")
 	}
-
 	protocol, _ := proxyOutbound["protocol"].(string)
 	settings, ok := proxyOutbound["settings"].(map[string]interface{})
 	if !ok {
 		return "", nil, fmt.Errorf("proxy outbound has no 'settings' field")
 	}
-
 	ipUpdated := false
 	switch strings.ToLower(protocol) {
 	case "vless", "vmess":
@@ -980,7 +942,6 @@ func createTempConfigWithIP(ip string, socksPort int) (string, *xraySocksInfo, e
 	if !ipUpdated {
 		return "", nil, fmt.Errorf("unsupported proxy protocol: %s", protocol)
 	}
-
 	cleanedProxy := map[string]interface{}{
 		"protocol": proxyOutbound["protocol"],
 		"settings": settings,
@@ -997,19 +958,10 @@ func createTempConfigWithIP(ip string, socksPort int) (string, *xraySocksInfo, e
 			cleanedProxy["mux"] = map[string]interface{}{"enabled": false}
 		}
 	}
-
 	newOutbounds := []interface{}{
 		cleanedProxy,
-		map[string]interface{}{
-			"protocol": "freedom",
-			"settings": map[string]interface{}{},
-			"tag":      "direct",
-		},
-		map[string]interface{}{
-			"protocol": "blackhole",
-			"settings": map[string]interface{}{"response": map[string]interface{}{"type": "http"}},
-			"tag":      "block",
-		},
+		map[string]interface{}{"protocol": "freedom", "settings": map[string]interface{}{}, "tag": "direct"},
+		map[string]interface{}{"protocol": "blackhole", "settings": map[string]interface{}{"response": map[string]interface{}{"type": "http"}}, "tag": "block"},
 	}
 	if dialerProxyTag != "" {
 		if refOut, found := outboundsByTag[dialerProxyTag]; found {
@@ -1026,7 +978,6 @@ func createTempConfigWithIP(ip string, socksPort int) (string, *xraySocksInfo, e
 			newOutbounds = append(newOutbounds, cleanRef)
 		}
 	}
-
 	cleanCfg := map[string]interface{}{
 		"log":      map[string]interface{}{"loglevel": "none"},
 		"inbounds": newInbounds,
@@ -1034,20 +985,15 @@ func createTempConfigWithIP(ip string, socksPort int) (string, *xraySocksInfo, e
 		"routing": map[string]interface{}{
 			"domainStrategy": "AsIs",
 			"rules": []interface{}{
-				map[string]interface{}{
-					"type":        "field",
-					"outboundTag": "proxy",
-					"network":     "tcp,udp",
-				},
+				map[string]interface{}{"type": "field", "outboundTag": "proxy", "network": "tcp,udp"},
 			},
 		},
 	}
-
-	path, writeErr := writeTempConfig(cleanCfg)
+	filePath, writeErr := writeTempConfig(cleanCfg)
 	if writeErr != nil {
 		return "", nil, writeErr
 	}
-	return path, socksInfo, nil
+	return filePath, socksInfo, nil
 }
 
 func createSocksDialer(socksInfo *xraySocksInfo) (proxy.Dialer, error) {
@@ -1084,47 +1030,29 @@ func SelfTestXray() error {
 	if err != nil {
 		return fmt.Errorf("Failed to find free port for self-test: %v", err)
 	}
-
 	cfg := map[string]interface{}{
-		"log": map[string]interface{}{
-			"loglevel": "warning",
-		},
-		"inbounds": []interface{}{
-			map[string]interface{}{
-				"listen":   "127.0.0.1",
-				"port":     float64(testPort),
-				"protocol": "socks",
-				"settings": map[string]interface{}{"udp": false},
-			},
-		},
-		"outbounds": []interface{}{
-			map[string]interface{}{"protocol": "freedom"},
-		},
+		"log":      map[string]interface{}{"loglevel": "warning"},
+		"inbounds": []interface{}{map[string]interface{}{"listen": "127.0.0.1", "port": float64(testPort), "protocol": "socks", "settings": map[string]interface{}{"udp": false}}},
+		"outbounds": []interface{}{map[string]interface{}{"protocol": "freedom"}},
 	}
-
 	cfgPath, err := writeTempConfig(cfg)
 	if err != nil {
 		return fmt.Errorf("Failed to write self-test config: %v", err)
 	}
 	defer os.Remove(cfgPath)
-
 	cmd := exec.Command("./xray/xray", "run", "-c", cfgPath)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &out
-
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("Failed to start core binary. Make sure it exists at ./xray/xray and is executable.\nError: %v", err)
 	}
-
 	err = waitForSocksReady(testPort, 6*time.Second)
-
 	if cmd.Process != nil {
 		syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 		cmd.Wait()
 	}
-
 	if err != nil {
 		errOutput := strings.TrimSpace(out.String())
 		if errOutput != "" {
@@ -1132,7 +1060,6 @@ func SelfTestXray() error {
 		}
 		return fmt.Errorf("Core failed to bind port within 6 seconds.\nTry restarting the terminal and running again.")
 	}
-
 	return nil
 }
 
@@ -1142,20 +1069,17 @@ func testIPViaXray(ip *net.IPAddr) (recv int, totalDelay time.Duration) {
 		recordDiag("configError", ip.String(), "no free port available")
 		return
 	}
-
 	configPath, socksInfo, err := createTempConfigWithIP(ip.String(), socksPort)
 	if err != nil {
 		recordDiag("configError", ip.String(), fmt.Sprintf("build config: %v", err))
 		return
 	}
 	defer os.Remove(configPath)
-
 	cmd := exec.Command("./xray/xray", "run", "-c", configPath)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	var stderrBuf bytes.Buffer
 	cmd.Stdout = io.Discard
 	cmd.Stderr = &stderrBuf
-
 	if err := cmd.Start(); err != nil {
 		recordDiag("configError", ip.String(), fmt.Sprintf("start core: %v", err))
 		return
@@ -1167,19 +1091,16 @@ func testIPViaXray(ip *net.IPAddr) (recv int, totalDelay time.Duration) {
 		}
 		time.Sleep(xrayKillSleep)
 	}()
-
 	if err := waitForSocksReady(socksPort, xraySocksReadyTimeout); err != nil {
 		stderrOut := strings.TrimSpace(stderrBuf.String())
 		recordDiag("startupTimeout", ip.String(), stderrOut)
 		return
 	}
-
 	httpClient, httpErr := makeTestHTTPClient(socksInfo, xrayPingTimeout)
 	if httpErr != nil {
 		recordDiag("configError", ip.String(), fmt.Sprintf("dialer: %v", httpErr))
 		return
 	}
-
 	start := time.Now()
 	resp, err := httpClient.Get("https://www.gstatic.com/generate_204")
 	if err != nil {
@@ -1197,21 +1118,22 @@ func testIPViaXray(ip *net.IPAddr) (recv int, totalDelay time.Duration) {
 	return
 }
 
-func PingIPsViaXray(stopCh <-chan struct{}, ips []*net.IPAddr) []PingResult {
+func PingIPsViaXray(stopCh <-chan struct{}, ips []*net.IPAddr, workers int, cp *Checkpoint, existingResults []PingResult) []PingResult {
 	if _, err := os.Stat("./xray/xray"); os.IsNotExist(err) {
 		color.New(color.FgRed).Println("ERROR: Core binary not found at ./xray/xray")
 		return nil
 	}
-
 	resetXrayDiag()
-
 	var results []PingResult
 	var mu sync.Mutex
 	total := len(ips)
-
-	color.New(color.FgCyan).Printf("Start latency test (Xray mode - %d workers, timeout %v per IP)\n", xrayWorkerCount, xrayPingTimeout)
+	processedCount := 0
+	baseIndex := 0
+	if cp != nil {
+		baseIndex = cp.ProgressIndex
+	}
+	color.New(color.FgCyan).Printf("Start latency test (Xray mode - %d workers, timeout %v per IP)\n", workers, xrayPingTimeout)
 	bar := newBar(total, "Available:", "")
-
 	ipChan := make(chan *net.IPAddr, total)
 	for _, ip := range ips {
 		select {
@@ -1221,9 +1143,8 @@ func PingIPsViaXray(stopCh <-chan struct{}, ips []*net.IPAddr) []PingResult {
 		}
 	}
 	close(ipChan)
-
 	var wg sync.WaitGroup
-	for w := 0; w < xrayWorkerCount; w++ {
+	for w := 0; w < workers; w++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -1235,6 +1156,7 @@ func PingIPsViaXray(stopCh <-chan struct{}, ips []*net.IPAddr) []PingResult {
 				}
 				recv, totalDelay := testIPViaXray(ipAddr)
 				mu.Lock()
+				processedCount++
 				nowAble := len(results)
 				if recv > 0 {
 					nowAble++
@@ -1246,25 +1168,28 @@ func PingIPsViaXray(stopCh <-chan struct{}, ips []*net.IPAddr) []PingResult {
 					})
 				}
 				bar.grow(1, strconv.Itoa(nowAble))
+				if cp != nil && processedCount%saveInterval == 0 {
+					cp.ProgressIndex = baseIndex + processedCount
+					merged := make([]PingResult, 0, len(existingResults)+len(results))
+					merged = append(merged, existingResults...)
+					merged = append(merged, results...)
+					cp.SetPingResults(merged)
+					cp.Save()
+				}
 				mu.Unlock()
 			}
 		}()
 	}
-
 	wg.Wait()
 	bar.done()
-
 	sort.Slice(results, func(i, j int) bool {
 		return results[i].Delay < results[j].Delay
 	})
-
 	fmt.Println()
-
 	diagInfo := GetXrayDiagInfo()
 	if diagInfo != "" {
 		color.New(color.FgYellow).Print(diagInfo)
 	}
-
 	color.New(color.FgGreen).Printf("Latency test completed (Xray): %d responsive IPs found\n\n", len(results))
 	return results
 }
@@ -1274,13 +1199,11 @@ func downloadSpeedViaXray(ip *net.IPAddr) float64 {
 	if err != nil {
 		return 0.0
 	}
-
 	configPath, socksInfo, err := createTempConfigWithIP(ip.String(), socksPort)
 	if err != nil {
 		return 0.0
 	}
 	defer os.Remove(configPath)
-
 	cmd := exec.Command("./xray/xray", "run", "-c", configPath)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Stdout = io.Discard
@@ -1295,32 +1218,26 @@ func downloadSpeedViaXray(ip *net.IPAddr) float64 {
 		}
 		time.Sleep(xrayKillSleep)
 	}()
-
 	if err := waitForSocksReady(socksPort, xraySocksReadyTimeout); err != nil {
 		return 0.0
 	}
-
 	httpClient, err := makeTestHTTPClient(socksInfo, xrayDownloadTimeout)
 	if err != nil {
 		return 0.0
 	}
-
 	req, err := http.NewRequest("GET", xrayDownloadURL, nil)
 	if err != nil {
 		return 0.0
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/98.0.4758.80 Safari/537.36")
-
 	response, err := httpClient.Do(req)
 	if err != nil {
 		return 0.0
 	}
 	defer response.Body.Close()
-
 	if response.StatusCode != 200 {
 		return 0.0
 	}
-
 	timeStart := time.Now()
 	timeEnd := timeStart.Add(xrayDownloadTimeout)
 	buffer := make([]byte, xrayBufferSize)
@@ -1330,7 +1247,6 @@ func downloadSpeedViaXray(ip *net.IPAddr) float64 {
 	timeCounter := 1
 	nextTime := timeStart.Add(timeSlice * time.Duration(timeCounter))
 	e := ewma.NewMovingAverage()
-
 	for {
 		currentTime := time.Now()
 		if currentTime.After(nextTime) {
@@ -1361,7 +1277,6 @@ func downloadSpeedViaXray(ip *net.IPAddr) float64 {
 		}
 		contentRead += int64(n)
 	}
-
 	avgBytesPerSec := e.Value() * 100 / xrayDownloadTimeout.Seconds()
 	return avgBytesPerSec / (1024 * 1024)
 }
@@ -1373,17 +1288,13 @@ func SpeedTestViaXray(stopCh <-chan struct{}, pingResults []PingResult) []IPResu
 		testNum = len(pingResults)
 		testCount = testNum
 	}
-
 	barPadding := "     "
 	for i := 0; i < len(strconv.Itoa(len(pingResults))); i++ {
 		barPadding += " "
 	}
-
 	color.New(color.FgCyan).Printf("Start download speed test (Xray mode, Number: %d, Queue: %d)\n", testCount, testNum)
 	bar := newBar(testCount, barPadding, "")
-
 	var results []IPResult
-
 	for i := 0; i < testNum; i++ {
 		select {
 		case <-stopCh:
@@ -1405,7 +1316,6 @@ func SpeedTestViaXray(stopCh <-chan struct{}, pingResults []PingResult) []IPResu
 			break
 		}
 	}
-
 done:
 	bar.done()
 	if len(results) > 0 {
@@ -1413,7 +1323,6 @@ done:
 			return results[i].DownloadSpeed > results[j].DownloadSpeed
 		})
 	}
-
 	fmt.Println()
 	color.New(color.FgGreen).Printf("Speed test completed (Xray): %d clean IPs found\n\n", len(results))
 	return results

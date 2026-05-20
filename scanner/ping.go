@@ -106,13 +106,14 @@ func PingIPs(stopCh <-chan struct{}, ips []*net.IPAddr, cp *Checkpoint, existing
 					Delay:    avg,
 				})
 			}
-			if cp != nil && processedCount%saveInterval == 0 {
+			if cp != nil && processedCount%saveIntervalMode1 == 0 {
 				cp.ProgressIndex = baseIndex + processedCount
 				merged := make([]PingResult, 0, len(existingResults)+len(results))
 				merged = append(merged, existingResults...)
 				merged = append(merged, results...)
-				cp.SetPingResults(merged)
-				cp.Save()
+				cpCopy := *cp
+				cpCopy.SetPingResults(merged)
+				cpCopy.SaveAsync()
 			}
 			mu.Unlock()
 		}(ip)

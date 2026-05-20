@@ -741,9 +741,7 @@ func buildBaseConfig(inbound, outbound map[string]interface{}) map[string]interf
 		},
 		"routing": map[string]interface{}{
 			"domainStrategy": "AsIs",
-			"rules": []interface{}{
-				map[string]interface{}{"type": "field", "outboundTag": "proxy", "network": "tcp,udp"},
-			},
+			"rules":          []interface{}{map[string]interface{}{"type": "field", "outboundTag": "proxy", "network": "tcp,udp"}},
 		},
 	}
 }
@@ -794,11 +792,11 @@ func buildConfigFromURL(rawURL string, scanIP string, socksPort int) (string, *x
 	if err != nil {
 		return "", nil, err
 	}
-	p, writeErr := writeTempConfig(buildBaseConfig(inbound, outbound))
+	fp, writeErr := writeTempConfig(buildBaseConfig(inbound, outbound))
 	if writeErr != nil {
 		return "", nil, writeErr
 	}
-	return p, socksInfo, nil
+	return fp, socksInfo, nil
 }
 
 func createTempConfigWithIP(ip string, socksPort int) (string, *xraySocksInfo, error) {
@@ -965,10 +963,7 @@ func createTempConfigWithIP(ip string, socksPort int) (string, *xraySocksInfo, e
 	}
 	if dialerProxyTag != "" {
 		if refOut, found := outboundsByTag[dialerProxyTag]; found {
-			cleanRef := map[string]interface{}{
-				"protocol": refOut["protocol"],
-				"tag":      dialerProxyTag,
-			}
+			cleanRef := map[string]interface{}{"protocol": refOut["protocol"], "tag": dialerProxyTag}
 			if refSettings, ok := refOut["settings"].(map[string]interface{}); ok {
 				cleanRef["settings"] = refSettings
 			}
@@ -984,9 +979,7 @@ func createTempConfigWithIP(ip string, socksPort int) (string, *xraySocksInfo, e
 		"outbounds": newOutbounds,
 		"routing": map[string]interface{}{
 			"domainStrategy": "AsIs",
-			"rules": []interface{}{
-				map[string]interface{}{"type": "field", "outboundTag": "proxy", "network": "tcp,udp"},
-			},
+			"rules":          []interface{}{map[string]interface{}{"type": "field", "outboundTag": "proxy", "network": "tcp,udp"}},
 		},
 	}
 	filePath, writeErr := writeTempConfig(cleanCfg)
@@ -1168,7 +1161,7 @@ func PingIPsViaXray(stopCh <-chan struct{}, ips []*net.IPAddr, workers int, cp *
 					})
 				}
 				bar.grow(1, strconv.Itoa(nowAble))
-				if cp != nil && processedCount%saveInterval == 0 {
+				if cp != nil && processedCount%saveIntervalMode2 == 0 {
 					cp.ProgressIndex = baseIndex + processedCount
 					merged := make([]PingResult, 0, len(existingResults)+len(results))
 					merged = append(merged, existingResults...)

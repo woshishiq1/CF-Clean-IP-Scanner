@@ -5,6 +5,7 @@ import (
 	"math/rand"
 	"net"
 	"strings"
+	"time"
 )
 
 type IPRanges struct {
@@ -69,7 +70,7 @@ func isIPv4(ip string) bool {
 	return strings.Contains(ip, ".")
 }
 
-func GenerateIPs(ranges []string) []*net.IPAddr {
+func buildIPRanges(ranges []string) *IPRanges {
 	ipRanges := newIPRanges()
 	for _, r := range ranges {
 		r = strings.TrimSpace(r)
@@ -85,10 +86,24 @@ func GenerateIPs(ranges []string) []*net.IPAddr {
 		}
 		ipRanges.expandCIDR(r)
 	}
+	return ipRanges
+}
 
-	rand.Shuffle(len(ipRanges.ips), func(i, j int) {
+func GenerateIPs(ranges []string) ([]*net.IPAddr, int64) {
+	seed := time.Now().UnixNano()
+	ipRanges := buildIPRanges(ranges)
+	rng := rand.New(rand.NewSource(seed))
+	rng.Shuffle(len(ipRanges.ips), func(i, j int) {
 		ipRanges.ips[i], ipRanges.ips[j] = ipRanges.ips[j], ipRanges.ips[i]
 	})
+	return ipRanges.ips, seed
+}
 
+func GenerateIPsWithSeed(ranges []string, seed int64) []*net.IPAddr {
+	ipRanges := buildIPRanges(ranges)
+	rng := rand.New(rand.NewSource(seed))
+	rng.Shuffle(len(ipRanges.ips), func(i, j int) {
+		ipRanges.ips[i], ipRanges.ips[j] = ipRanges.ips[j], ipRanges.ips[i]
+	})
 	return ipRanges.ips
 }

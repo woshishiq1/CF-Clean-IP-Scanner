@@ -4,12 +4,14 @@ import (
 	"encoding/json"
 	"net"
 	"os"
+	"sync"
 	"time"
 )
 
 const (
-	checkpointFile = "scan_checkpoint.json"
-	saveInterval   = 100
+	checkpointFile      = "scan_checkpoint.json"
+	saveIntervalMode1   = 2000
+	saveIntervalMode2   = 500
 )
 
 type CheckpointPhase string
@@ -34,22 +36,21 @@ type Checkpoint struct {
 	Completed     bool            `json:"completed"`
 	ProgressIndex int             `json:"progress_index"`
 	TotalIPs      int             `json:"total_ips"`
-	AllIPs        []string        `json:"all_ips"`
+	Seed          int64           `json:"seed"`
 	PingResults   []cpPingResult  `json:"ping_results"`
 	SavedAt       string          `json:"saved_at"`
 }
 
-func NewCheckpoint(mode, workers int, ips []*net.IPAddr) *Checkpoint {
-	allIPs := make([]string, len(ips))
-	for i, ip := range ips {
-		allIPs[i] = ip.String()
-	}
+var asyncSaveMu sync.Mutex
+var asyncSaveRunning bool
+
+func NewCheckpoint(mode, workers int, totalIPs int, seed int64) *Checkpoint {
 	return &Checkpoint{
 		Mode:     mode,
 		Workers:  workers,
 		Phase:    PhasePing,
-		TotalIPs: len(ips),
-		AllIPs:   allIPs,
+		TotalIPs: totalIPs,
+		Seed:     seed,
 	}
 }
 
@@ -82,22 +83,6 @@ func (c *Checkpoint) GetPingResults() []PingResult {
 	return results
 }
 
-func (c *Checkpoint) GetRemainingIPs() []*net.IPAddr {
-	start := c.ProgressIndex
-	if start >= len(c.AllIPs) {
-		return nil
-	}
-	ips := make([]*net.IPAddr, 0, len(c.AllIPs)-start)
-	for _, ipStr := range c.AllIPs[start:] {
-		ipAddr, err := net.ResolveIPAddr("ip", ipStr)
-		if err != nil {
-			continue
-		}
-		ips = append(ips, ipAddr)
-	}
-	return ips
-}
-
 func (c *Checkpoint) save() error {
 	c.SavedAt = time.Now().Format("2006-01-02 15:04:05")
 	data, err := json.MarshalIndent(c, "", "  ")
@@ -113,6 +98,24 @@ func (c *Checkpoint) save() error {
 
 func (c *Checkpoint) Save() {
 	c.save()
+}
+
+func (c *Checkpoint) SaveAsync() {
+	asyncSaveMu.Lock()
+	if asyncSaveRunning {
+		asyncSaveMu.Unlock()
+		return
+	}
+	asyncSaveRunning = true
+	snapshot := *c
+	asyncSaveMu.Unlock()
+
+	go func() {
+		snapshot.save()
+		asyncSaveMu.Lock()
+		asyncSaveRunning = false
+		asyncSaveMu.Unlock()
+	}()
 }
 
 func (c *Checkpoint) MarkPingDone(allPingResults []PingResult) {
@@ -137,7 +140,7 @@ func LoadCheckpoint() *Checkpoint {
 	if err := json.Unmarshal(data, &cp); err != nil {
 		return nil
 	}
-	if cp.Completed || len(cp.AllIPs) == 0 {
+	if cp.Completed || cp.TotalIPs == 0 || cp.Seed == 0 {
 		return nil
 	}
 	return &cp
